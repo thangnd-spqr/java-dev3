@@ -68,4 +68,4 @@ class CreateOrderServiceTest {
 
         assertThrows(DomainException.class, () -> createOrderService.execute(command));
     }
-}\n
+}

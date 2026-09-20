@@ -20,4 +20,4 @@ public class OrderItem {
     public double getSubtotal() {
         return price * quantity;
     }
-}\n
+}

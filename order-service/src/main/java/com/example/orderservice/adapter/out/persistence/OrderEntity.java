@@ -19,4 +19,4 @@ public class OrderEntity {
     private String id;
     private double total;
     private String status;
-}\n
+}

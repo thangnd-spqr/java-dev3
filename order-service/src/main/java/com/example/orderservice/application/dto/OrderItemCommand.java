@@ -9,4 +9,4 @@ public class OrderItemCommand {
     private String productId;
     private int quantity;
     private double price;
-}\n
+}

@@ -34,4 +34,4 @@ public class PostgresOrderRepository implements OrderRepository {
                 return null;
             });
     }
-}\n
+}

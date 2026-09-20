@@ -5,4 +5,4 @@ import com.example.orderservice.application.dto.OrderResponse;
 
 public interface CreateOrderUseCase {
     OrderResponse execute(CreateOrderCommand command);
-}\n
+}

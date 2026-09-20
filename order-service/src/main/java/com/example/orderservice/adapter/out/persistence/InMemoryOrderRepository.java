@@ -25,4 +25,4 @@ public class InMemoryOrderRepository implements OrderRepository {
     public Optional<Order> findById(OrderId id) {
         return Optional.ofNullable(store.get(id.getValue()));
     }
-}\n
+}

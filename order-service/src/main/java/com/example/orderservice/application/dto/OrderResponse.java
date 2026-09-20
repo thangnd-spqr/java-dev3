@@ -9,4 +9,4 @@ public class OrderResponse {
     private String orderId;
     private double total;
     private String status;
-}\n
+}

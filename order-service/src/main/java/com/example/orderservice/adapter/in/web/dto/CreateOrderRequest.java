@@ -9,4 +9,4 @@ import java.util.List;
 public class CreateOrderRequest {
     private String orderId;
     private List<OrderItemRequest> items;
-}\n
+}

@@ -15,4 +15,4 @@ public class ProductId {
         }
         this.value = value;
     }
-}\n
+}

@@ -15,4 +15,4 @@ public class OrderId {
         }
         this.value = value;
     }
-}\n
+}
