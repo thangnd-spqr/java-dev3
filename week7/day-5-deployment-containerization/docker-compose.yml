@@ -1,0 +1,130 @@
+name: order-platform-local
+
+# =============================================================================
+# Local integration environment: order-service + PostgreSQL + Kafka (KRaft)
+#
+#   cp .env.example .env      # điền DB_PASSWORD
+#   docker compose up -d --build
+#   curl http://localhost:8080/actuator/health/readiness
+#
+# - Mọi config runtime đi qua env vars; secret lấy từ `.env` (không commit).
+# - depends_on + healthcheck CHỈ giúp thứ tự khởi động local, KHÔNG thay thế
+#   readiness probe trên Kubernetes. App vẫn phải tự chịu được dependency chậm/lỗi.
+# =============================================================================
+
+services:
+  order-service:
+    build:
+      context: ../../order-service
+      dockerfile: ../week7/day-5-deployment-containerization/Dockerfile
+      args:
+        APP_VERSION: ${IMAGE_TAG:-1.4.0-local}
+    image: order-service:${IMAGE_TAG:-1.4.0-local}
+    ports:
+      - "${ORDER_SERVICE_PORT:-8080}:8080"
+    environment:
+      SERVER_PORT: 8080
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
+      APP_ENV: ${APP_ENV:-local}
+      LOGGING_LEVEL_COM_EXAMPLE: ${LOG_LEVEL_APP:-INFO}
+      SHUTDOWN_TIMEOUT: 20s
+      # --- Database (password bắt buộc truyền từ .env, không có default) ---
+      DB_URL: jdbc:postgresql://order-db:5432/${POSTGRES_DB:-orderdb}
+      DB_USERNAME: ${DB_USERNAME:-order_app}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+      JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
+      # --- Kafka ---
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_ORDER_EVENTS: ${KAFKA_TOPIC_ORDER_EVENTS:-order.events.v1}
+      # --- Downstream ---
+      INVENTORY_SERVICE_URL: ${INVENTORY_SERVICE_URL:-http://host.docker.internal:8082}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL:-http://host.docker.internal:8083}
+      # --- Feature flags cho migration status model ---
+      FEATURE_STATUS_V2_WRITE: ${FEATURE_STATUS_V2_WRITE:-false}
+      FEATURE_STATUS_V2_READ: ${FEATURE_STATUS_V2_READ:-false}
+    depends_on:
+      order-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      # Compose dùng readiness để biết "sẵn sàng nhận traffic"
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness | grep -q '\"status\":\"UP\"' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 40s
+    stop_grace_period: 30s        # > SHUTDOWN_TIMEOUT để graceful shutdown kịp xong
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [order-net]
+
+  order-db:
+    image: postgres:16.3-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-orderdb}
+      POSTGRES_USER: ${DB_USERNAME:-order_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [order-net]
+
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "${KAFKA_EXTERNAL_PORT:-29092}:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks: [order-net]
+
+  # One-shot job tạo topic (auto-create bị tắt giống production)
+  kafka-init:
+    image: apache/kafka:3.7.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+        --topic ${KAFKA_TOPIC_ORDER_EVENTS:-order.events.v1} --partitions 3 --replication-factor 1
+    restart: "no"
+    networks: [order-net]
+
+volumes:
+  order-db-data:
+
+networks:
+  order-net:
+    driver: bridge
+

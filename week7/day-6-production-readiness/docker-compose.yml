@@ -1,0 +1,153 @@
+name: order-platform-prod-readiness
+
+services:
+  # ===========================================================================
+  # 1. Order Service (Spring Boot 3 + Actuator + Graceful Shutdown + Non-root)
+  # ===========================================================================
+  order-service:
+    build:
+      context: ../../order-service
+      dockerfile: ../week7/day-5-production-readiness/Dockerfile
+    image: order-service:1.0.0
+    container_name: order-service
+    restart: unless-stopped
+    ports:
+      - "${ORDER_SERVICE_PORT:-8080}:8080"
+    environment:
+      SERVER_PORT: 8080
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      APP_ENV: ${APP_ENV:-staging}
+      # Graceful shutdown phase timeout
+      SHUTDOWN_TIMEOUT: 30s
+      # Database connection via Environment Variables (Secret injected from host/.env)
+      DB_URL: jdbc:postgresql://order-db:5432/${POSTGRES_DB:-orderdb}
+      DB_USERNAME: ${POSTGRES_USER:-order_app}
+      DB_PASSWORD: ${DB_PASSWORD:?ERROR_DB_PASSWORD_MUST_BE_PROVIDED_VIA_ENV}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-20}
+      DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-5}
+      DB_CONNECTION_TIMEOUT_MS: 2000
+      JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
+      JPA_SHOW_SQL: "false"
+      # Downstream service endpoints
+      INVENTORY_SERVICE_URL: ${INVENTORY_SERVICE_URL:-http://inventory-service:8082}
+      INVENTORY_TIMEOUT_MS: ${INVENTORY_TIMEOUT_MS:-1000}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL:-http://payment-service:8083}
+      PAYMENT_TIMEOUT_MS: ${PAYMENT_TIMEOUT_MS:-2000}
+    # Thời gian chờ của Docker trước khi gửi SIGKILL phải lớn hơn SHUTDOWN_TIMEOUT (30s)
+    stop_grace_period: 35s
+    stop_signal: SIGTERM
+    # Giới hạn tài nguyên container để JVM (-XX:MaxRAMPercentage=75.0) tính đúng Heap (~384MB)
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    # Bảo mật container: cấm leo thang đặc quyền, rootfs chỉ đọc, cấp tmpfs cho /tmp
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+      - /tmp/heapdumps:size=512M,uid=10001,gid=10001
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness | grep -q '\"status\":\"UP\"' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 25s
+    depends_on:
+      order-db:
+        condition: service_healthy
+    networks:
+      - order-net
+
+  # ===========================================================================
+  # 2. PostgreSQL Database (Order & Outbox Store)
+  # ===========================================================================
+  order-db:
+    image: postgres:16-alpine
+    container_name: order-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-orderdb}
+      POSTGRES_USER: ${POSTGRES_USER:-order_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?ERROR_DB_PASSWORD_MUST_BE_PROVIDED_VIA_ENV}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-order_app} -d $${POSTGRES_DB:-orderdb}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - order-net
+
+  # ===========================================================================
+  # 3. Prometheus (Scrape /actuator/prometheus từ order-service)
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: order-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    depends_on:
+      - order-service
+    networks:
+      - order-net
+
+  # ===========================================================================
+  # 4. Grafana (Observability Dashboards: Technical + Business Metrics)
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: order-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?ERROR_GRAFANA_PASSWORD_MUST_BE_PROVIDED_VIA_ENV}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - order-net
+
+configs:
+  prometheus_config:
+    content: |
+      global:
+        scrape_interval: 5s
+        evaluation_interval: 5s
+      scrape_configs:
+        - job_name: 'order-service'
+          metrics_path: '/actuator/prometheus'
+          static_configs:
+            - targets: ['order-service:8080']
+              labels:
+                service: 'order-service'
+
+volumes:
+  order-db-data:
+  grafana-data:
+
+networks:
+  order-net:
+    driver: bridge
+

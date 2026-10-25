@@ -3,7 +3,9 @@ package com.example.orderservice.application.service;
 import com.example.orderservice.application.dto.CreateOrderCommand;
 import com.example.orderservice.application.dto.OrderItemCommand;
 import com.example.orderservice.application.dto.OrderResponse;
+import com.example.orderservice.application.dto.PaymentResponse;
 import com.example.orderservice.application.port.out.OrderRepository;
+import com.example.orderservice.application.port.out.PaymentServicePort;
 import com.example.orderservice.domain.exception.DomainException;
 import com.example.orderservice.domain.valueobject.OrderId;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,17 +17,21 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 class CreateOrderServiceTest {
 
     private OrderRepository orderRepository;
+    private PaymentServicePort paymentServicePort;
     private CreateOrderService createOrderService;
 
     @BeforeEach
     void setUp() {
         orderRepository = mock(OrderRepository.class);
-        createOrderService = new CreateOrderService(orderRepository);
+        paymentServicePort = mock(PaymentServicePort.class);
+        createOrderService = new CreateOrderService(orderRepository, paymentServicePort);
     }
 
     @Test
@@ -36,6 +42,8 @@ class CreateOrderServiceTest {
         );
 
         when(orderRepository.findById(new OrderId("ORD-001"))).thenReturn(Optional.empty());
+        when(paymentServicePort.charge(anyString(), anyDouble()))
+            .thenReturn(new PaymentResponse("PAY-001", true, "Payment successful"));
 
         OrderResponse response = createOrderService.execute(command);
 

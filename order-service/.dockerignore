@@ -1,0 +1,38 @@
+# Git & Version Control
+.git
+.gitignore
+
+# Build outputs & Gradle cache
+.gradle/
+build/
+bin/
+out/
+target/
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+# Secrets & local environment files (NEVER bake into image)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+application-local.yml
+application-secret.yml
+
+# Documentation & test reports
+docs/
+*.md
+*.log
+hs_err_pid*
+heapdump*.hprof
+

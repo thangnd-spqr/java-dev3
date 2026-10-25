@@ -1,0 +1,179 @@
+# ============================================================
+# application-observability.yml — Order Service
+# Spring Boot 3.2 + Micrometer + Prometheus + Micrometer Tracing (OTel)
+#
+# Kích hoạt: SPRING_PROFILES_ACTIVE=observability  (đặt file thành application-observability.yml)
+# hoặc:      spring.config.import=optional:classpath:application-observability.yml
+#
+# Dependencies cần có (build.gradle):
+#   implementation 'org.springframework.boot:spring-boot-starter-actuator'
+#   implementation 'io.micrometer:micrometer-registry-prometheus'
+#   implementation 'io.micrometer:micrometer-tracing-bridge-otel'
+#   implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+#   implementation 'net.logstash.logback:logstash-logback-encoder:7.4'   # JSON log (Boot 3.2)
+#   implementation 'io.github.resilience4j:resilience4j-micrometer'      # CB/Retry/Bulkhead metrics
+# ============================================================
+
+management:
+  # Actuator chạy port riêng → không expose ra Internet qua Gateway/Ingress,
+  # chỉ Prometheus / k8s probe trong cluster truy cập.
+  server:
+    port: ${MANAGEMENT_PORT:8081}
+
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,circuitbreakers,retries,loggers
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState,ping
+        readiness:
+          include: readinessState,db,outboxBacklog
+    prometheus:
+      enabled: true
+
+  info:
+    env:
+      enabled: true
+
+  # ---------------- Metrics ----------------
+  metrics:
+    # Common tags cho MỌI metric
+    tags:
+      application: ${spring.application.name}
+      environment: ${APP_ENV:local}
+      version: ${APP_VERSION:unknown}
+    distribution:
+      # Histogram → tính p50/p95/p99 aggregate qua nhiều pod bằng histogram_quantile()
+      percentiles-histogram:
+        http.server.requests: true
+        http.client.requests: true
+        checkout.duration: true
+        spring.kafka.listener: true
+        hikaricp.connections.acquire: true
+      # SLO buckets → tính % request đạt SLO
+      slo:
+        http.server.requests: 100ms,300ms,500ms,800ms,1s,2s,5s
+        http.client.requests: 100ms,300ms,500ms,1s,2s,3s
+        checkout.duration: 300ms,800ms,2s
+      minimum-expected-value:
+        http.server.requests: 5ms
+      maximum-expected-value:
+        http.server.requests: 10s
+        http.client.requests: 10s
+
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+  # ---------------- Tracing ----------------
+  tracing:
+    enabled: true
+    sampling:
+      # local = 1.0; prod nên 0.1 (head sampling) + tail sampling ở OTel Collector
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+    propagation:
+      # W3C traceparent (chuẩn) + B3 để tương thích service cũ
+      consume: [w3c, b3]
+      produce: [w3c]
+    baggage:
+      remote-fields: correlationId,tenantId
+      correlation:
+        enabled: true
+        # Đưa baggage vào MDC → xuất hiện trong mọi log line
+        fields: correlationId,tenantId
+
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://otel-collector:4318/v1/traces}
+
+  observations:
+    key-values:
+      application: ${spring.application.name}
+
+spring:
+  application:
+    name: order-service
+  kafka:
+    template:
+      observation-enabled: true     # propagate traceparent vào Kafka header khi publish
+    listener:
+      observation-enabled: true     # tiếp tục trace khi consume
+
+# ---------------- Resilience4j metrics/events ----------------
+resilience4j:
+  circuitbreaker:
+    instances:
+      inventoryService:
+        register-health-indicator: true
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 800ms
+        slow-call-rate-threshold: 50
+        minimum-number-of-calls: 20
+        sliding-window-type: TIME_BASED
+        sliding-window-size: 10
+        wait-duration-in-open-state: 15s
+        permitted-number-of-calls-in-half-open-state: 5
+        automatic-transition-from-open-to-half-open-enabled: true
+  retry:
+    instances:
+      inventoryService:
+        # Tối đa 1 retry, có backoff + jitter → tránh retry storm
+        max-attempts: 2
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        enable-randomized-wait: true
+        randomized-wait-factor: 0.5
+        retry-exceptions:
+          - java.net.ConnectException
+          - java.net.SocketTimeoutException
+  bulkhead:
+    instances:
+      # Giới hạn số call đồng thời tới Inventory → Inventory chậm không ăn hết Tomcat threads
+      inventoryService:
+        max-concurrent-calls: 40
+        max-wait-duration: 50ms
+      paymentService:
+        max-concurrent-calls: 40
+        max-wait-duration: 50ms
+
+clients:
+  inventory:
+    connect-timeout-ms: ${INVENTORY_CONNECT_TIMEOUT_MS:300}
+    timeout-ms: ${INVENTORY_TIMEOUT_MS:1000}
+  payment:
+    connect-timeout-ms: ${PAYMENT_CONNECT_TIMEOUT_MS:300}
+    timeout-ms: ${PAYMENT_TIMEOUT_MS:2000}
+
+server:
+  tomcat:
+    threads:
+      max: ${TOMCAT_MAX_THREADS:200}
+    mbeanregistry:
+      enabled: true                 # bật metric tomcat_threads_busy_threads
+
+metrics:
+  stuck-order:
+    refresh: 30s
+
+# ---------------- Logging ----------------
+logging:
+  # Boot 3.2: thêm [app,traceId,spanId] vào log pattern mặc định
+  include-application-name: true
+  pattern:
+    correlation: "[${spring.application.name:},%X{traceId:-},%X{spanId:-},%X{correlationId:-}] "
+    level: "%5p [orderId=%X{orderId:-}]"
+  level:
+    root: INFO
+    com.example.orderservice: INFO
+    org.hibernate.SQL: WARN          # không log SQL ở production
+# Production JSON log: dùng logback-spring.xml với LogstashEncoder (Boot 3.2),
+# hoặc từ Boot 3.4+: logging.structured.format.console: ecs
+

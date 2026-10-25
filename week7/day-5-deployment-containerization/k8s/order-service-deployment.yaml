@@ -1,0 +1,135 @@
+# =============================================================================
+# Order Service — Deployment (stable track)
+# - RollingUpdate maxUnavailable=0 / maxSurge=1 → không giảm capacity khi deploy
+# - startup / liveness / readiness tách biệt
+# - Non-root, read-only rootfs, không mount service account token
+# - Config từ ConfigMap, secret từ Secret (không có giá trị nhạy cảm ở đây)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  labels:
+    app: order-service
+    track: stable
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5            # giữ ReplicaSet cũ để `kubectl rollout undo`
+  minReadySeconds: 20                # pod phải Ready ổn định 20s mới được tính là available
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: order-service
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: order-service
+        track: stable
+        version: "1.4.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45   # > preStop (10s) + SHUTDOWN_TIMEOUT (30s)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: order-service
+          # Tag bất biến: <semver>-<git-sha>. Production khuyến nghị pin thêm digest @sha256:...
+          image: registry.example.com/flashsale/order-service:1.4.0-a1b2c3d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: order-service-config
+            - secretRef:
+                name: order-service-secret
+          resources:
+            requests:
+              cpu: 500m
+              memory: 768Mi
+            limits:
+              memory: 768Mi             # JVM heap = 75% limit (MaxRAMPercentage)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+          # Startup: cho phép tối đa 30 x 5s = 150s để JVM + Spring context lên.
+          # Trong thời gian này liveness/readiness CHƯA chạy.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+            timeoutSeconds: 2
+
+          # Liveness: chỉ trạng thái nội tại (livenessState) — KHÔNG DB/Kafka/downstream.
+          # Fail → kubelet restart container.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 2
+
+          # Readiness: readinessState + DB (dependency critical cho checkout).
+          # Fail → bị gỡ khỏi Service endpoints, KHÔNG restart.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 2
+
+          lifecycle:
+            preStop:
+              # Chờ kube-proxy / ingress gỡ endpoint trước khi app ngừng nhận request
+              sleep:
+                seconds: 10           # K8s >= 1.30; bản cũ hơn dùng exec: ["sh","-c","sleep 10"]
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: order-service
+---
+# Giữ tối thiểu 2 pod khi node drain / cluster upgrade
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: order-service
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: order-service
+

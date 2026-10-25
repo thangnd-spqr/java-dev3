@@ -1,2 +1,7 @@
 week2/docs/
 docs
+.gradle/
+**/build/
+.idea/
+*.iml
+.vscode/

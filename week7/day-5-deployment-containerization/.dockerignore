@@ -1,0 +1,56 @@
+# =============================================================================
+# .dockerignore — giảm build context & chặn dữ liệu nhạy cảm lọt vào image
+# Lưu ý: Docker đọc .dockerignore tại ROOT của build context.
+# Build context của service là ../../order-service → file này cần được copy/sync
+# sang order-service/.dockerignore (xem README).
+# =============================================================================
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.idea
+.vscode
+*.iml
+.project
+.classpath
+.settings
+
+# Build output (image tự build lại trong build stage)
+target
+build
+bin
+out
+.gradle
+
+# Secrets & local env — KHÔNG BAO GIỜ đưa vào build context
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.crt
+id_rsa*
+application-local.yml
+application-secret*.yml
+**/secrets/
+
+# Data / log có thể chứa PII
+*.log
+*.sql.gz
+*.dump
+dumps/
+heapdump*.hprof
+hs_err_pid*
+
+# Tài liệu & manifest không cần trong image
+*.md
+docs
+k8s
+docker-compose*.yml
+Dockerfile*
+

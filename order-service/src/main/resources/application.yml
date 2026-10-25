@@ -1,12 +1,74 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
 spring:
+  application:
+    name: order-service
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
   datasource:
-    url: jdbc:postgresql://localhost:5432/orderdb
-    username: postgres
-    password: password
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/orderdb}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:2000}
   jpa:
+    open-in-view: false
     hibernate:
-      ddl-auto: update
-    show-sql: true
+      ddl-auto: ${JPA_DDL_AUTO:update}
+    show-sql: ${JPA_SHOW_SQL:false}
+
+clients:
+  inventory:
+    base-url: ${INVENTORY_SERVICE_URL:http://localhost:8082}
+    timeout-ms: ${INVENTORY_TIMEOUT_MS:1000}
+  payment:
+    base-url: ${PAYMENT_SERVICE_URL:http://localhost:8083}
+    timeout-ms: ${PAYMENT_TIMEOUT_MS:2000}
+
+# ============================================================
+# Spring Boot Actuator, Probes & Observability
+# ============================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,circuitbreakers,retries
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+      group:
+        # Liveness KHÔNG phụ thuộc external system (DB/Kafka/Downstream) để tránh Restart Storm
+        liveness:
+          include: livenessState,ping
+        # Readiness kiểm tra khả năng nhận traffic của instance
+        readiness:
+          include: readinessState,db,outboxBacklog
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+    circuitbreakers:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      environment: ${APP_ENV:local}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 50ms,100ms,250ms,500ms,1s,2s,5s
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [service=${spring.application.name},traceId=%X{traceId:-},correlationId=%X{correlationId:-},orderId=%X{orderId:-}] %logger{36} - %msg%n"
 
 # ============================================================
 # Resilience4j Configuration
@@ -16,8 +78,12 @@ resilience4j:
   circuitbreaker:
     instances:
       paymentService:
+        register-health-indicator: true
         # Failure threshold: mở CB khi >= 50% request fail
         failure-rate-threshold: 50
+        # Slow call threshold: call > 1500ms coi là chậm
+        slow-call-duration-threshold: 1500ms
+        slow-call-rate-threshold: 50
         # Số request tối thiểu trước khi CB tính failure rate
         minimum-number-of-calls: 5
         # Số request được phép thử trong trạng thái HALF-OPEN
@@ -44,4 +110,3 @@ resilience4j:
           - java.util.concurrent.TimeoutException
           - java.net.ConnectException
           - com.example.orderservice.adapter.out.payment.PaymentTransientException
-\n

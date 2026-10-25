@@ -1,0 +1,48 @@
+# =============================================================================
+# Order Service — ConfigMap (KHÔNG chứa secret)
+# Owner: team-order | Thay đổi phải qua PR review. Đổi ConfigMap không tự restart
+# pod khi dùng envFrom → rollout bằng `kubectl rollout restart` hoặc đổi
+# checksum annotation (Helm/Kustomize configMapGenerator).
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-service-config
+  labels:
+    app: order-service
+  annotations:
+    config.version: "2026-10-25.1"
+    owner: team-order
+data:
+  # ---- Runtime ----
+  SPRING_PROFILES_ACTIVE: prod
+  APP_ENV: prod
+  SERVER_PORT: "8080"
+  SHUTDOWN_TIMEOUT: 30s
+  LOGGING_LEVEL_ROOT: INFO
+  LOGGING_LEVEL_COM_EXAMPLE: INFO
+
+  # ---- Infrastructure (host/URL — không phải credential) ----
+  DB_URL: jdbc:postgresql://order-db.data.svc.cluster.local:5432/orderdb?sslmode=require
+  DB_POOL_MAX_SIZE: "20"
+  DB_POOL_MIN_IDLE: "5"
+  DB_CONNECTION_TIMEOUT_MS: "2000"
+  JPA_DDL_AUTO: validate            # Schema do migration job (Flyway) quản lý, KHÔNG để app tự ALTER
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka-0.kafka.data.svc:9093,kafka-1.kafka.data.svc:9093,kafka-2.kafka.data.svc:9093
+  SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: SASL_SSL
+  SPRING_KAFKA_PROPERTIES_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TOPIC_ORDER_EVENTS: order.events.v1
+  INVENTORY_SERVICE_URL: http://inventory-service.flashsale.svc.cluster.local
+  INVENTORY_TIMEOUT_MS: "1000"
+  PAYMENT_SERVICE_URL: http://payment-service.flashsale.svc.cluster.local
+  PAYMENT_TIMEOUT_MS: "2000"
+
+  # ---- Feature flags (migration status model — xem migration-plan.md) ----
+  FEATURE_STATUS_V2_WRITE: "true"   # Release 2: dual-write
+  FEATURE_STATUS_V2_READ: "false"   # Release 3: bật dần qua canary
+
+  # ---- Actuator ----
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: never
+
